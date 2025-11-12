@@ -39,24 +39,31 @@ tab_inf <- tid %>%
 
 readr::write_csv(tab_inf, "reports/logit_inference.csv")
 
-# === 3) VIF (solo per le colonne effettivamente nel modello) ===
-# Nota: car::vif lavora su formula e dati; ricostruisco il frame model.matrix
-mm <- model.matrix(fit)  # disegno X usato dal modello
-df_mm <- as.data.frame(mm)
-# rimuovi l'intercetta
-if ("(Intercept)" %in% names(df_mm)) df_mm <- df_mm[, setdiff(names(df_mm), "(Intercept)"), drop = FALSE]
-
-# costruiamo una formula artificiale per VIF
-form_vif <- as.formula(paste("~", paste(names(df_mm), collapse = " + ")))
-v <- tryCatch(car::vif(lm(form_vif, data = df_mm)), error = function(e) NULL)
-
-if (!is.null(v)) {
-  vif_tbl <- tibble(term_name = names(v), VIF = as.numeric(v)) %>%
-    arrange(desc(VIF))
-  readr::write_csv(vif_tbl, "reports/logit_vif.csv")
-} else {
-  message("VIF non calcolabile (possibile collinearità perfetta).")
+# === 3) VIF robusto senza formule (niente car::vif) ===
+# Prendo il modello design matrix usato dal fit
+X <- model.matrix(fit)
+# rimuovo l'intercetta
+if ("(Intercept)" %in% colnames(X)) {
+  X <- X[, setdiff(colnames(X), "(Intercept)"), drop = FALSE]
 }
+
+# Calcolo VIF per ogni colonna: regressione X_j ~ X_-j
+vif_vec <- sapply(seq_len(ncol(X)), function(j) {
+  yj <- X[, j]
+  Xj <- X[, -j, drop = FALSE]
+  # lm con formula minima per evitare problemi di nomi
+  r2 <- summary(lm(yj ~ Xj))$r.squared
+  1 / (1 - r2)
+})
+
+vif_tbl <- tibble::tibble(
+  term_name = colnames(X),
+  VIF = as.numeric(vif_vec)
+) |> dplyr::arrange(dplyr::desc(VIF))
+
+readr::write_csv(vif_tbl, "reports/logit_vif.csv")
+cat("OK: reports/logit_vif.csv scritto\n")
+
 
 # === 4) Average Marginal Effects (AME) ===
 # AME = media, sul campione, degli effetti marginali dP(Y=1)/dX
@@ -70,10 +77,18 @@ ame_df <- summary(marg) %>%
 readr::write_csv(ame_df, "reports/logit_marginal_effects.csv")
 
 # === 5) Grafico 1: Forest degli Odds Ratio (escludi l'intercetta) ===
-plot_or <- tab_inf %>%
+# --- Forest plot Odds Ratio (robusto) ---
+tab_plot <- tab_inf %>%
   filter(term_name != "(Intercept)") %>%
-  mutate(term_name = fct_reorder(term_name, odds_ratio)) %>%  # ordina per OR
-  ggplot(aes(x = odds_ratio, y = term_name)) +
+  # rimuovi termini problematici (NA/Inf)
+  filter(is.finite(odds_ratio),
+         is.finite(or_conf_low),
+         is.finite(or_conf_high)) %>%
+  arrange(odds_ratio) %>%
+  # ordina "a mano": fattore con livelli = ordine corrente
+  mutate(term_name = factor(term_name, levels = unique(term_name)))
+
+plot_or <- ggplot(tab_plot, aes(x = odds_ratio, y = term_name)) +
   geom_vline(xintercept = 1, color = "grey60", linetype = 2) +
   geom_point(size = 2) +
   geom_errorbarh(aes(xmin = or_conf_low, xmax = or_conf_high), height = 0.15) +
@@ -86,22 +101,69 @@ plot_or <- tab_inf %>%
 
 ggsave("reports/figures/logit_odds_ratio_forest.png", plot_or, width = 9, height = 12, dpi = 150)
 
+
 # === 6) Grafico 2: AME (con CI) — variabili ordinate per |AME| ===
 # Mantieni solo termini informativi (escludi intercept, termini non stimati)
-plot_ame <- ame_df %>%
+# --- AME senza 'margins' ---
+# Predizioni grezze sul train (coerenti col fit)
+p_hat <- as.numeric(predict(fit, newdata = train, type = "response"))
+
+# Matrice X del modello (stessa del fit) senza intercetta
+X <- model.matrix(fit)
+if ("(Intercept)" %in% colnames(X)) {
+  X <- X[, setdiff(colnames(X), "(Intercept)"), drop = FALSE]
+}
+betas <- coef(fit)[colnames(X)]  # allineo i beta alle colonne
+
+# AME per continue: mean( beta_j * p*(1-p) )
+# Heuristica: consideriamo "continue" le colonne non-dummy (no pattern 'segment', no 'SEX', etc.)
+is_dummy <- grepl("^segment", colnames(X)) | grepl("^SEX$|^MARRIAGE$|^EDUCATION$", colnames(X))
+cont_cols <- colnames(X)[!is_dummy]
+
+ame_cont <- sapply(cont_cols, function(nm) {
+  mean(betas[nm] * p_hat * (1 - p_hat), na.rm = TRUE)
+})
+
+# AME per dummy: discrete change (1 -> 0)
+dummy_cols <- colnames(X)[is_dummy]
+# funzione per AME discreto su una dummy (tenendo fermi gli altri regressori)
+ame_dummy <- function(colname) {
+  # stato attuale
+  X0 <- X
+  X1 <- X
+  # per dummy codificata come colonna singola del model.matrix
+  X1[, colname] <- X1[, colname] + 1
+  # attenzione: con più dummy per una stessa factor può essere più complesso
+  # (qui assumiamo codifica 0/1 per quella colonna specifica)
+  eta0 <- drop(cbind(1, X0) %*% coef(fit))  # aggiungo intercetta
+  eta1 <- drop(cbind(1, X1) %*% coef(fit))
+  p0 <- 1/(1+exp(-eta0)); p1 <- 1/(1+exp(-eta1))
+  mean(p1 - p0, na.rm = TRUE)
+}
+
+# Per semplicità: calcola per le dummy principali che ti interessano
+ame_dum_vals <- sapply(dummy_cols, ame_dummy)
+
+ame_manual <- tibble::tibble(
+  term_name = c(names(ame_cont), names(ame_dum_vals)),
+  AME = c(as.numeric(ame_cont), as.numeric(ame_dum_vals))
+) %>% dplyr::arrange(dplyr::desc(abs(AME)))
+
+readr::write_csv(ame_manual, "reports/logit_marginal_effects_manual.csv")
+
+# --- Plot AME robusto ---
+plot_ame <- ame_manual %>%
   filter(!is.na(AME), term_name != "(Intercept)") %>%
-  mutate(term_name = fct_reorder(term_name, abs(AME))) %>%
+  dplyr::slice_max(order_by = abs(AME), n = 25) %>%          # top-25 più leggibili
+  dplyr::arrange(AME) %>%
+  dplyr::mutate(term_name = factor(term_name, levels = term_name)) %>%
   ggplot(aes(x = AME, y = term_name)) +
   geom_vline(xintercept = 0, color = "grey60", linetype = 2) +
   geom_point(size = 2) +
-  geom_errorbarh(aes(xmin = conf_low, xmax = conf_high), height = 0.15) +
   labs(
-    title = "Average Marginal Effects on PD (95% CI)",
-    x = "Δ PD (on average) per unit change / level change", y = NULL
+    title = "Average Marginal Effects on PD (manual, top 25)",
+    x = "Δ PD medio per incremento unitario / cambio livello", y = NULL
   ) +
   theme_minimal(base_size = 11)
 
-ggsave("reports/figures/logit_marginal_effects.png", plot_ame, width = 9, height = 12, dpi = 150)
-
-cat("OK: wrote reports/logit_inference.csv, reports/logit_vif.csv, reports/logit_marginal_effects.csv\n")
-cat("OK: figures in reports/figures/: logit_odds_ratio_forest.png, logit_marginal_effects.png\n")
+ggsave("reports/figures/logit_marginal_effects_manual.png", plot_ame, width = 9, height = 10, dpi = 150)
