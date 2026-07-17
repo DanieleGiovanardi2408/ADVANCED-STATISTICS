@@ -25,7 +25,7 @@ Starting from 30,000 credit-card clients, the project (1) engineers repayment-be
 The Random Forest is a small but **statistically significant** step up in ranking power (DeLong *p* = 1.4 × 10⁻⁴). The logistic model is kept as the primary model because it is fully interpretable and well-calibrated — the properties a credit function actually needs.
 
 <p align="center">
-  <img src="docs/assets/roc_comparison.png" width="70%" alt="ROC curves — Logit vs Random Forest on the test set">
+  <img src="roc_comparison.png" width="70%" alt="ROC curves — Logit vs Random Forest on the test set">
 </p>
 
 ---
@@ -93,19 +93,19 @@ On top of the raw variables, five behavioural features summarise each client's l
 Seventeen standardised behavioural features feed a k-means model. The number of clusters is chosen by maximising the **silhouette** score (with the elbow/WCSS curve as a sanity check): **k = 5** wins (silhouette 0.262).
 
 <p align="center">
-  <img src="docs/assets/k_selection.png" width="80%" alt="k selection: silhouette bars and WCSS elbow, k=5 chosen">
+  <img src="k_selection.png" width="80%" alt="k selection: silhouette bars and WCSS elbow, k=5 chosen">
 </p>
 
 The five clusters map onto a clean risk ladder, from a **6% default** segment to a **50% default** segment — a 9× spread in risk discovered without ever looking at the target:
 
 <p align="center">
-  <img src="docs/assets/segment_risk.png" width="85%" alt="Default rate by behavioural segment">
+  <img src="segment_risk.png" width="85%" alt="Default rate by behavioural segment">
 </p>
 
 Reading the segments' **behavioural fingerprint** explains *why* each is risky. The *Very high risk* group is defined by delinquency (high `max_dpd` / months late); the *Very low risk* group by consistently large payments (transactors who clear their balance); the *High risk* group carries big revolving balances with a falling bill trend:
 
 <p align="center">
-  <img src="docs/assets/segment_heatmap.png" width="95%" alt="z-scored feature means per segment">
+  <img src="segment_heatmap.png" width="95%" alt="z-scored feature means per segment">
 </p>
 
 ### 3 · Probability of Default — logistic model
@@ -119,7 +119,7 @@ The model is fully interpretable — odds ratios with 95% CIs and average margin
 Raw scores are passed through **Platt scaling** fitted on validation. On test, predicted PDs track observed default rates closely across the whole range — the model is trustworthy as a probability, not just a ranking:
 
 <p align="center">
-  <img src="docs/assets/calibration.png" width="55%" alt="Calibration / reliability curve, test set">
+  <img src="calibration.png" width="55%" alt="Calibration / reliability curve, test set">
 </p>
 
 ### 5 · From probability to decision
@@ -137,13 +137,13 @@ The low threshold is deliberate: because a missed default hurts 5× more, the po
 A **Random Forest** (`ranger`, 500 trees) sets a non-linear ceiling: **AUC 0.776** vs 0.754, a gap that is statistically significant (DeLong *p* = 1.4 × 10⁻⁴) but modest in practice, and it needs isotonic post-hoc calibration to match the logit's Brier.
 
 <p align="center">
-  <img src="docs/assets/model_comparison.png" width="80%" alt="AUC and Brier: Logit vs Random Forest">
+  <img src="model_comparison.png" width="80%" alt="AUC and Brier: Logit vs Random Forest">
 </p>
 
 In business terms, the **gain/lift** curves show what the score buys you: targeting the riskiest **30% of customers captures ~62% of all defaults** (lift ≈ 3× in the top decile):
 
 <p align="center">
-  <img src="docs/assets/gain_lift.png" width="95%" alt="Cumulative gain and lift curves">
+  <img src="gain_lift.png" width="95%" alt="Cumulative gain and lift curves">
 </p>
 
 ---
@@ -204,7 +204,7 @@ ADVANCED-STATISTICS/
 ├── 01_*  02_*  … 08_*  99_*        # numbered pipeline (R + Python)
 ├── z_io_helpers.R.r                # shared IO helpers
 ├── Test_coerenza.r                 # sanity checks on PD / thresholds
-├── docs/assets/                    # figures used in this README
+├── *.png                           # figures used in this README
 ├── data/                           # (generated) raw + interim CSVs — gitignored
 ├── outputs/                        # (generated) metrics, model artifacts, JSON
 └── reports/figures/                # (generated) analysis figures
